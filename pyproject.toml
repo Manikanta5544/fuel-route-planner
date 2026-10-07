@@ -1,0 +1,40 @@
+[project]
+name = "fuel-route-planner"
+version = "1.0.0"
+description = "Async Django API: cost-optimal fuel stops along a US driving route"
+requires-python = ">=3.13"
+dependencies = [
+    "django>=6.1.2,<6.2",
+    "pydantic>=2.7",
+    "httpx>=0.27",
+    "numpy>=2",
+    "shapely>=2",
+    "pyproj>=3.6",
+    "orjson>=3.10",
+    "cachetools>=5",
+    "redis>=5",
+    "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "hypothesis", "respx", "ruff"]
+
+[tool.setuptools.packages.find]
+include = ["api*", "config*", "planner*", "routing*", "stations*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "SIM"]
+ignore = ["SIM905"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E501"]

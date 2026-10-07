@@ -1,0 +1,11 @@
+services:
+  app:
+    build: .
+    ports: ["8000:8000"]
+    env_file: [{path: .env, required: false}]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      ALLOWED_HOSTS: "*"
+    depends_on: [redis]
+  redis:
+    image: redis:7-alpine

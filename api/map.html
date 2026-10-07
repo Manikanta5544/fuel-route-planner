@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fuel Route Planner</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; display: flex; flex-direction: column; height: 100vh; }
+  form { display: flex; gap: 8px; padding: 8px; flex-wrap: wrap; align-items: center; }
+  input { padding: 6px; min-width: 200px; }
+  #summary { padding: 0 8px 8px; }
+  #map { flex: 1; }
+  .pin { background: #1d4ed8; color: #fff; border-radius: 50%; width: 24px; height: 24px;
+         line-height: 24px; text-align: center; font-weight: 600; border: 2px solid #fff; }
+</style>
+</head>
+<body>
+<form id="form">
+  <input id="start" placeholder="Start: City, ST or lat,lng" required>
+  <input id="finish" placeholder="Finish: City, ST or lat,lng" required>
+  <button>Plan route</button>
+</form>
+<div id="summary"></div>
+<div id="map"></div>
+<script>
+const params = new URLSearchParams(location.search);
+const startEl = document.getElementById("start"), finishEl = document.getElementById("finish");
+const summary = document.getElementById("summary");
+startEl.value = params.get("start") || "";
+finishEl.value = params.get("finish") || "";
+const map = L.map("map").setView([39.5, -98.35], 4);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 18, attribution: "&copy; OpenStreetMap contributors",
+}).addTo(map);
+let layer = L.layerGroup().addTo(map);
+
+function parseLocation(text) {
+  const m = text.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+  return m ? { lat: Number(m[1]), lng: Number(m[2]) } : text.trim();
+}
+
+function popup(stop) {
+  const el = document.createElement("div");
+  const lines = [
+    `#${stop.order} ${stop.name}`, `${stop.city}, ${stop.state}`, stop.address,
+    `Mile ${stop.mile_marker}, ${stop.off_route_miles} mi off route`,
+    `$${stop.price_per_gallon}/gal x ${stop.gallons_purchased} gal = $${stop.cost_usd}`,
+  ];
+  lines.forEach((t, i) => {
+    const row = document.createElement(i ? "div" : "b");
+    row.textContent = t;
+    el.appendChild(row);
+  });
+  return el;
+}
+
+async function plan() {
+  const body = { start: parseLocation(startEl.value), finish: parseLocation(finishEl.value) };
+  for (const key of ["mpg", "max_range_miles"]) if (params.has(key)) body[key] = Number(params.get(key));
+  summary.textContent = "Planning...";
+  const resp = await fetch("/api/v1/route", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const data = await resp.json();
+  layer.clearLayers();
+  if (!resp.ok) { summary.textContent = data.error.message; return; }
+  const coords = data.route.geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+  const line = L.polyline(coords, { color: "#1d4ed8", weight: 4 }).addTo(layer);
+  L.marker(coords[0]).bindPopup("Start").addTo(layer);
+  L.marker(coords[coords.length - 1]).bindPopup("Finish").addTo(layer);
+  data.fuel_stops.forEach((s) => {
+    const icon = L.divIcon({ className: "", html: `<div class="pin">${s.order}</div>`, iconSize: [24, 24] });
+    L.marker([s.lat, s.lng], { icon }).bindPopup(popup(s)).addTo(layer);
+  });
+  map.fitBounds(line.getBounds());
+  const f = data.fuel;
+  summary.textContent = `${data.route.distance_miles} mi, ${data.fuel_stops.length} stops, ` +
+    `cash at stops $${f.cash_spent_at_stops_usd}, estimated total fuel cost $${f.estimated_total_fuel_cost_usd}`;
+}
+
+document.getElementById("form").addEventListener("submit", (e) => { e.preventDefault(); plan(); });
+if (startEl.value && finishEl.value) plan();
+</script>
+</body>
+</html>

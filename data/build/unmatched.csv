@@ -1,0 +1,12 @@
+id,name,address,city,state,price,reason
+4179,CIRCLE K #2705352,"I-95/SR-405, EXIT 109 & SR-30/SR-21",Port Wentworth,GA,3.099,no_gazetteer_match
+52641,PILOT TRAVEL CENTERS #71,"I-95, EXIT 109",Port Wentworth,GA,3.37233,no_gazetteer_match
+60250,ELIZABETH TRUCK STOP,"I-95, EXIT 13A & SR-81",Elizabethport,NJ,3.399,no_gazetteer_match
+66780,DIAMOND #20,"I-65, EXIT 93 & SR-84",Evergreen,AL,3.399,no_gazetteer_match
+67325,LOVES TRAVEL STOP #225,"I-65, EXIT 93 & US-84",Evergreen,AL,3.339,no_gazetteer_match
+70783,ENMARKET #820,"I-95/SR-405, EXIT 109 & SR-21",Port Wentworth,GA,3.09067,no_gazetteer_match
+70983,QUARLES #4943,"I-295, EXIT 22A & SR-5",Henrico,VA,3.699,no_gazetteer_match
+71869,PORT FUEL CENTER,"I-516, EXIT 7B & SR-21",Port Wentworth,GA,3.18233,no_gazetteer_match
+72429,PARKERS #16 (DISCOUNT AVAILABLE),SR-21,Port Wentworth,GA,3.10567,no_gazetteer_match
+72447,SHEETZ #689,I-64 EXIT 197A  & SR-156,Henrico,VA,2.949,no_gazetteer_match
+73072,QUIKTRIP #7204,"I-57, EXIT 337 & SR-50",University Park,IL,3.079,no_gazetteer_match

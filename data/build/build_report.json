@@ -1,0 +1,36 @@
+{
+  "rows_total": 8151,
+  "non_us_rows_dropped": 620,
+  "non_us_by_state": {
+    "AB": 180,
+    "ON": 217,
+    "BC": 121,
+    "NB": 4,
+    "SK": 36,
+    "MB": 42,
+    "QC": 6,
+    "YT": 8,
+    "NS": 6
+  },
+  "identical_duplicate_rows": 26,
+  "unique_us_stops": 6626,
+  "conflicting_price_stops": 487,
+  "ids_with_multiple_places": 0,
+  "price_rule": "min",
+  "gazetteer_sources": {
+    "uscities": {
+      "places": 29738,
+      "added": 29738
+    }
+  },
+  "places_total": 29738,
+  "matched_exact": 6614,
+  "matched_fuzzy": 1,
+  "unmatched": 11,
+  "unmatched_by_reason": {
+    "no_gazetteer_match": 11
+  },
+  "match_rate": 0.9983,
+  "stations_written": 6615,
+  "differs_from_expected": {}
+}

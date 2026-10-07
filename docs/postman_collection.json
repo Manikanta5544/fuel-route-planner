@@ -1,0 +1,36 @@
+{
+  "info": {
+    "name": "Fuel Route Planner",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [{"key": "base_url", "value": "http://localhost:8000"}],
+  "item": [
+    {
+      "name": "Plan route (City, ST)",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "url": "{{base_url}}/api/v1/route",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"Dallas, TX\",\n  \"finish\": \"New York, NY\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Route map page",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/api/v1/route/map?start=Dallas, TX&finish=New York, NY",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "route", "map"],
+          "query": [
+            {"key": "start", "value": "Dallas, TX"},
+            {"key": "finish", "value": "New York, NY"}
+          ]
+        }
+      }
+    }
+  ]
+}

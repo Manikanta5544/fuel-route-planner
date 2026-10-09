@@ -1,6 +1,8 @@
 """Test utilities: polyline encoder, synthetic stations and straight-line routes."""
 
+import functools
 import math
+from pathlib import Path
 
 import numpy as np
 
@@ -62,3 +64,11 @@ def line_route(
         ]
     miles = sum(haversine_miles(a, b) for a, b in zip(pts, pts[1:], strict=False)) * road_factor
     return Route(encode_polyline(pts), miles, miles / 60 * 3600, provider)
+
+
+@functools.cache
+def us_area():
+    """The real US/Canada/Mexico geometry from the committed build artifacts."""
+    from stations.store import load_usa
+
+    return load_usa(Path("data/build"))

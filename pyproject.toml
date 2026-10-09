@@ -2,7 +2,7 @@
 name = "fuel-route-planner"
 version = "1.0.0"
 description = "Async Django API: cost-optimal fuel stops along a US driving route"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "django>=6.1.2,<6.2",
     "pydantic>=2.7",
@@ -30,7 +30,7 @@ addopts = "-q"
 
 [tool.ruff]
 line-length = 100
-target-version = "py313"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "SIM"]

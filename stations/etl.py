@@ -12,6 +12,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
+import shapely
 from shapely.geometry import mapping, shape
 from shapely.ops import unary_union
 
@@ -22,6 +23,10 @@ US_STATES = frozenset(
     "NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY".split()
 )
 FUZZY_CUTOFF = 0.88
+US_SIMPLIFY_DEG = 0.005  # about 500 m
+FOREIGN_SIMPLIFY_DEG = 0.002  # about 200 m: the border matters more than the coast
+BAND_DEG = 1.0  # how far into Canada/Mexico the border check looks
+ENDPOINT_BUFFER_DEG = 0.02  # tolerance for city centroids that sit on the coast
 EXPECTED = {
     "rows_total": 8151,
     "non_us_rows_dropped": 620,
@@ -41,8 +46,8 @@ SOURCES = {
     ),
     "boundary": (
         "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/"
-        "ne_50m_admin_0_countries.geojson",
-        "ne_50m_countries.geojson",
+        "ne_10m_admin_0_countries.geojson",
+        "ne_10m_countries.geojson",
     ),
 }
 _SUFFIX = re.compile(
@@ -119,10 +124,14 @@ def _strip_suffix(name: str) -> str:
 
 def load_census(path: Path) -> dict[str, tuple[float, float]]:
     """Census places gazetteer (tab-delimited): prefer non-CDP, then larger land area."""
-    with open(path, newline="", encoding="utf-8") as fh:
-        reader = csv.reader(fh, delimiter="\t")
-        header = [h.strip() for h in next(reader)]
-        recs = [dict(zip(header, (c.strip() for c in row), strict=False)) for row in reader if row]
+    raw = path.read_bytes()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:  # Census gazetteer files may be Latin-1
+        text = raw.decode("latin-1")
+    reader = csv.reader(io.StringIO(text), delimiter="\t")
+    header = [h.strip() for h in next(reader)]
+    recs = [dict(zip(header, (c.strip() for c in row), strict=False)) for row in reader if row]
     recs.sort(key=lambda r: (r["NAME"].endswith("CDP"), -float(r["ALAND"] or 0)))
     table: dict[str, tuple[float, float]] = {}
     for r in recs:
@@ -140,19 +149,28 @@ def load_uscities(path: Path) -> dict[str, tuple[float, float]]:
     return table
 
 
-def build_usa(boundary_path: Path) -> dict:
-    """Contiguous-US polygon (Natural Earth admin-0), simplified to ~1 km."""
-    feats = json.loads(boundary_path.read_text(encoding="utf-8"))["features"]
-    usa = next(f for f in feats if f["properties"].get("ADM0_A3") == "USA")
-    parts = [
+def build_territories(boundary_path: Path) -> tuple[dict, dict]:
+    """Contiguous-US land (islands such as the Keys included) and the Canada/Mexico band beside it.
+
+    The band is what the route check measures: a route "leaves the US" only when it runs inside
+    Canadian or Mexican territory, so coastlines, bays and bridges never count against it.
+    """
+    feats = {
+        f["properties"].get("ADM0_A3"): f
+        for f in json.loads(boundary_path.read_text(encoding="utf-8"))["features"]
+    }
+    conus = [
         g
-        for g in shape(usa["geometry"]).geoms
-        if g.bounds[0] > -130 and g.bounds[2] < -60 and g.bounds[1] > 23 and g.area > 0.05
+        for g in shape(feats["USA"]["geometry"]).geoms
+        if g.bounds[1] > 20 and g.centroid.x > -130 and g.centroid.y < 50.5
     ]
-    return mapping(unary_union(parts).simplify(0.01))
+    us = unary_union(conus).simplify(US_SIMPLIFY_DEG)
+    neighbours = unary_union([shape(feats[k]["geometry"]) for k in ("CAN", "MEX")])
+    foreign = neighbours.intersection(us.buffer(BAND_DEG)).simplify(FOREIGN_SIMPLIFY_DEG)
+    return mapping(us), mapping(foreign)
 
 
-def join_coordinates(stations, places) -> tuple[list[dict], list[dict], dict]:
+def join_coordinates(stations, places, us_area) -> tuple[list[dict], list[dict], dict]:
     names_by_state = defaultdict(list)
     for key in places:
         state, name = key.split("|", 1)
@@ -167,7 +185,7 @@ def join_coordinates(stations, places) -> tuple[list[dict], list[dict], dict]:
                 coords, method = places[f"{s['state']}|{close[0]}"], "fuzzy"
         if coords is None:
             unmatched.append({**s, "reason": "no_gazetteer_match"})
-        elif not (24.0 <= coords[0] <= 50.0 and -125.0 <= coords[1] <= -66.0):
+        elif not shapely.contains_xy(us_area, coords[1], coords[0]):
             unmatched.append({**s, "reason": "outside_contiguous_us"})
         else:
             methods[method] += 1
@@ -177,7 +195,9 @@ def join_coordinates(stations, places) -> tuple[list[dict], list[dict], dict]:
 
 def build(csv_path: Path, gazetteer_dir: Path, out_dir: Path, price_rule: str = "min") -> dict:
     stations, report = clean_stations(csv_path, price_rule)
-    usa = build_usa(gazetteer_dir / SOURCES["boundary"][1])
+    us, foreign = build_territories(gazetteer_dir / SOURCES["boundary"][1])
+    us_area = shape(us).buffer(ENDPOINT_BUFFER_DEG)
+    shapely.prepare(us_area)
     places: dict[str, tuple[float, float]] = {}
     sources_used = {}
     for key, loader in (("census", load_census), ("uscities", load_uscities)):
@@ -189,7 +209,7 @@ def build(csv_path: Path, gazetteer_dir: Path, out_dir: Path, price_rule: str = 
                 places.setdefault(k, v)
     if not places:
         raise FileNotFoundError(f"no gazetteer file in {gazetteer_dir}; run with --download")
-    matched, unmatched, methods = join_coordinates(stations, places)
+    matched, unmatched, methods = join_coordinates(stations, places, us_area)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     cols = ("id", "name", "address", "city", "state")
@@ -206,7 +226,8 @@ def build(csv_path: Path, gazetteer_dir: Path, out_dir: Path, price_rule: str = 
             separators=(",", ":"),
         )
     )
-    (out_dir / "usa.geojson").write_text(json.dumps(usa, separators=(",", ":")))
+    (out_dir / "usa.geojson").write_text(json.dumps(us, separators=(",", ":")))
+    (out_dir / "foreign.geojson").write_text(json.dumps(foreign, separators=(",", ":")))
     with open(out_dir / "unmatched.csv", "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, [*cols, "price", "reason"])
         w.writeheader()

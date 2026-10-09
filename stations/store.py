@@ -38,5 +38,7 @@ def load_places(build_dir: Path) -> Places | None:
 
 
 def load_usa(build_dir: Path) -> UsaArea | None:
-    path = build_dir / "usa.geojson"
-    return UsaArea(json.loads(path.read_text())) if path.exists() else None
+    us, foreign = build_dir / "usa.geojson", build_dir / "foreign.geojson"
+    if not (us.exists() and foreign.exists()):
+        return None
+    return UsaArea(json.loads(us.read_text()), json.loads(foreign.read_text()))

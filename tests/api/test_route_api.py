@@ -54,7 +54,7 @@ async def test_cold_then_warm_with_city_and_coordinate_inputs(client, mock):
         "geocode_calls": 0,
         "external_calls": 1,
         "fallback_used": False,
-        "route_leaves_usa": False,
+        "us_only_reroute": False,
     }
     assert (j["meta"]["cache"]["route"], j["meta"]["cache"]["layer"]) == ("miss", None)
     check_plan(j)
@@ -91,6 +91,8 @@ async def test_response_shape_headers_and_gzip(client):
         "planning",
         "performance",
         "assumptions",
+        "locations",
+        "warnings",
     }
     assert j["meta"]["assumptions"]["mpg"] == 12 and "mpg=12" in j["map_url"]
     stop = j["fuel_stops"][0]
@@ -117,6 +119,7 @@ async def test_response_shape_headers_and_gzip(client):
         "average_purchase_price_per_gallon",
         "initial_fuel",
         "estimated_total_fuel_cost_usd",
+        "estimate_basis",
     }
     check_plan(j)
 
@@ -215,6 +218,8 @@ async def test_outside_supported_area_is_rejected_before_any_upstream_call(
         {"start": "", "finish": "Eastville, SC"},
         {"start": "Westville, TX", "finish": "Eastville, SC", "mpg": 0},
         {"start": "Westville, TX", "finish": "Eastville, SC", "max_range_miles": 10},
+        {"start": "Westville, TX", "finish": "Eastville, SC", "max_range_miles": 501},
+        {"start": "Westville, TX", "finish": "Eastville, SC", "max_range_miles": 2000},
         {"start": "Westville, TX", "finish": "Eastville, SC", "extra": 1},
         {"start": coords(95, 0), "finish": "Eastville, SC"},
         {"start": "Westville, TX", "finish": "Eastville, SC", "pad": "x" * 5000},
@@ -293,3 +298,28 @@ async def test_hundred_concurrent_identical_api_requests_make_one_routing_call(c
     assert all(r.status_code == 200 for r in results)
     assert mock.ors.call_count == 1
     assert sum(r.json()["meta"]["routing"]["routing_calls"] for r in results) == 1
+
+
+async def test_mpg_and_range_variants_reuse_the_cached_route(client, mock):
+    """The route cache key is independent of mpg and max range: one provider call in total."""
+    base = {"start": "Westville, TX", "finish": "Eastville, SC"}
+    first = (await post(client, base)).json()
+    assert first["meta"]["assumptions"]["max_range_miles"] == 500
+    for extra in ({"mpg": 8}, {"mpg": 25}, {"max_range_miles": 500}, {"max_range_miles": 350}):
+        r = await post(client, base | extra)
+        assert r.status_code == 200
+        j = r.json()
+        assert j["meta"]["routing"]["routing_calls"] == 0
+        check_plan(j, max_range=extra.get("max_range_miles", 500))
+    assert mock.ors.call_count == 1
+    assert (await post(client, base | {"mpg": 25})).json()["fuel"]["gallons_consumed"] < first[
+        "fuel"
+    ]["gallons_consumed"]
+
+
+async def test_location_metadata_and_precision_are_exposed(client):
+    j = (await post(client, {"start": "Westville, TX", "finish": coords(33.0, -80.0)})).json()
+    loc = j["meta"]["locations"]
+    assert set(loc) == {"start", "finish"}
+    assert loc["start"]["lat"] and loc["finish"]["lat"] == 33.0
+    assert j["meta"]["assumptions"]["station_location_precision"] == "city_centroid"

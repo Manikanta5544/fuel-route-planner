@@ -13,7 +13,7 @@ async def test_dallas_to_new_york_on_real_artifact(real_client):
     check_plan(j)
     assert j["meta"]["routing"]["provider"] == "osrm"
     assert j["meta"]["routing"]["routing_calls"] == 1
-    assert j["route"]["distance_miles"] == 1550.0 and not j["meta"]["routing"]["route_leaves_usa"]
+    assert j["route"]["distance_miles"] == 1550.0 and not j["meta"]["routing"]["us_only_reroute"]
     golden = json.loads((FIXTURES / "golden_dallas_ny.json").read_text())
     got = {
         "stops": [

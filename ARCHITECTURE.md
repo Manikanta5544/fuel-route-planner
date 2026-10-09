@@ -1,8 +1,27 @@
-# Fuel Route Planner: Architecture and Engineering Decisions (FINAL, frozen)
+# Fuel Route Planner: Architecture and Engineering Decisions (FINAL)
 
-> **Goal:** a fast, deterministic Django API. Input: two US locations. Output: the driving route on a map, cost-optimal fuel stops respecting a 500-mile range, and total fuel spend at 10 MPG.
+> **Goal:** a fast, deterministic Django API. Input: two US locations. Output: the driving route on a map, cost-optimal (for the modeled fixed-route problem) fuel stops respecting a 500-mile range, and total fuel spend at 10 MPG.
 >
 > **Principle:** keep the request path local and deterministic. The routing provider is the only expensive external dependency: **1 call on a cold request, 0 on a cache hit, hard cap of 3.**
+
+
+> **Amendments from the final review (these supersede any conflicting text below).** The original design is unchanged except:
+> 1. **US-only routes.** The polygon/`route_leaves_usa` flag is replaced by foreign-territory mileage: Natural Earth 10 m polygons for the US
+>    (with islands) and for a 1° band of Canada/Mexico are built by the ETL (`usa.geojson`, `foreign.geojson`). A route with an unbroken
+>    stretch of 2+ miles inside the foreign band leaves the US. `Router.route_us_only` then re-routes once with ORS `options.avoid_borders="all"`
+>    (OSRM cannot), re-checks, and otherwise raises `ROUTE_LEAVES_SUPPORTED_AREA` (422). The call budget (3) covers primary + reroute + fallback;
+>    bundles are cached with `border_avoided`; a cached L2 route that crosses the border is ignored. Cache key version bumped to v2.
+> 2. **ORS endpoint** is `https://api.heigit.org/openrouteservice`; the key stays optional and OSRM remains the keyless default and fallback.
+> 3. **`max_range_miles` is capped at 500** (50-500). `mpg` is optional (default 10). Neither is in the route cache key.
+> 4. **Cost labels.** `cash_spent_at_stops_usd` is fact; `estimated_total_fuel_cost_usd` values the start tank (`START_TANK_BILLING`), with the
+>    valuation basis reported (`first_purchase_price`, `cheapest_corridor_station`, `no_reference_station`, `not_applicable`, or `excluded` -> null).
+> 5. **Locations** return `meta.locations` (precision, matched place) and `meta.warnings`; `D.C.` and similar forms parse. Station precision is
+>    reported as `city_centroid`. No geocoder was added: only 5 of 6,626 CSV addresses are street-level, so the payoff is nil.
+> 6. **Optimality wording:** cost-optimal among candidate stations in the selected corridor under the detour-adjusted ranking model (a documented
+>    heuristic), not a global optimum. The objective is unchanged.
+> 7. **Infeasible** errors name the uncovered stretch (e.g. California in the supplied CSV).
+> 8. **Settings** validate choices and ranges at start-up; the map page has SRI hashes and degrades gracefully when Leaflet or tiles fail;
+>    the container runs as non-root with health checks.
 
 ---
 
@@ -13,7 +32,7 @@
 | Latest stable Django | **Django 6.1.2** (pin `>=6.1.2,<6.2`), Python 3.13 (6.1 supports 3.12–3.14) |
 | Start and finish in the USA | Coordinates or `City, ST` (offline); contiguous-US polygon check |
 | Return a map of the route | Route geometry in JSON **plus** a Leaflet map page driven by the same JSON |
-| Optimal, cost-effective stops | Fixed-route next-cheaper greedy, verified against an exact DP |
+| Optimal, cost-effective stops | Fixed-route next-cheaper greedy, verified against an exact DP (optimal for the modeled problem, see section 7.3) |
 | 500-mile range, multiple stops | Capacity 50 gal; any number of stops |
 | Total spend at 10 MPG | Cash spent at stops (fact) plus a labelled estimate of total trip cost (section 8) |
 | Use the supplied CSV | Offline ETL into an immutable in-memory artifact |
@@ -49,8 +68,8 @@ The routing provider is never called per station. One route call gives the geome
 |---|---|
 | Framework | Django 6.1.2, native async views (no DRF) |
 | Validation | pydantic v2 |
-| Server | `uvicorn` multi-process (`--workers $WEB_CONCURRENCY`); count set by benchmarking, not assumed; no gunicorn layer |
-| HTTP client | `httpx.AsyncClient`, pooled keep-alive, connect 2 s / read 8 s |
+| Server | `scripts/serve.py` (uvicorn, TCP listener bound with `IPPROTO_TCP`); `WEB_CONCURRENCY` default 1; plain `uvicorn --workers N` avoided (40 ms keep-alive stall) |
+| HTTP client | `httpx.AsyncClient`, pooled keep-alive, connect 2 s / read `ROUTING_TIMEOUT_S` (default 5 s) |
 | Routing | ORS `driving-car` primary; OSRM fallback behind one interface |
 | Geometry | shapely 2.x (`STRtree`, `line_locate_point`), pyproj, numpy |
 | JSON | orjson |
@@ -71,7 +90,7 @@ Accepted forms:
 ```
 
 - `City, ST` resolves offline from the same gazetteer used by the ETL, with aliases ("New York City", "St."/"Saint", "Mt."/"Mount"). Ambiguity is resolved by the state.
-- **Optional, flag-guarded free-text addresses** (`ENABLE_GEOCODER=false` by default): resolved through a separate geocoder adapter, each lookup counted in a separate `geocode_calls` counter (section 6.3). Off by default keeps the hot path fully deterministic and at 0 geocode calls; on, it covers reviewers who send street addresses.
+- **Free text, as implemented:** there is no external geocoder. Text is parsed offline: `City, ST`, `City, Texas`, `City ST`, accents ignored. A street address ending in `..., City, ST` resolves to that city's centre (city-centroid precision, recorded as `place_resolution` in `meta.assumptions`); `123 Main St, Dallas, TX` therefore routes from Dallas's centre, not the exact address. An unresolvable name returns 422. A real geocoder (counted in `geocode_calls`, off by default) is a possible extension and is **not implemented**; `geocode_calls` is always 0.
 - Outside the supported area, return `422 LOCATION_OUTSIDE_SUPPORTED_AREA`. Validation happens **before** any upstream call.
 
 ---
@@ -112,10 +131,10 @@ async def route(start: Coordinate, finish: Coordinate, *, budget: CallBudget) ->
 
 ### 6.2 ORS specifics
 - Coordinates are `[lng, lat]`; request `units` in miles or convert from metres once at the boundary.
-- **Base URL: verify before coding.** The draft's `https://api.heigit.org/openrouteservice` is unverified, and the account portal has moved to `account.heigit.org`. Confirm the endpoint in your dashboard and keep it in `ORS_BASE_URL`, which is required only when ORS is enabled. Verify `radiuses`, `avoid_borders` and quotas against the live documentation before implementing; until then they are runtime configuration, not facts.
+- **Base URL:** `https://api.heigit.org/openrouteservice` (documented endpoint, default of `ORS_BASE_URL`; the account portal is `account.heigit.org`). Request shape (`radiuses`, `avoid_borders`) follows the ORS documentation; **not exercised live** from the authoring environment.
 - Documented limits: 6,000 km maximum route distance and 50 waypoints for driving profiles. Coast to coast fits in one call. Per-day/minute quotas are **unverified**; check the dashboard.
 - **Snapping:** ORS defaults to a 350 m radius around each input coordinate. City centroids can fall farther from a road, which yields a "could not find routable point" error. Pass a widened `radiuses` array (the ORS parameter that overrides the default; confirm the exact "unlimited" value in the API playground), and map the error to `422 LOCATION_NOT_ROUTABLE`.
-- **Borders:** `options.avoid_borders` (`all` or `controlled`, driving profiles only) exists. A forum thread reports an error (2099) with `all` in some cases, so test it before relying on it. Default `ORS_AVOID_BORDERS=none`. After routing, test the geometry against the US polygon. If the route leaves the US, set `meta.route_leaves_usa=true` and, if enabled, re-route once with `avoid_borders` (total calls ≤ 2).
+- **Borders:** `options.avoid_borders` (`all` or `controlled`, driving profiles only) exists. A forum thread reports an error (2099) with `all` in some cases, so test it before relying on it. After routing, the geometry is tested for foreign mileage (amendment 1). If it leaves the US, re-route once with `avoid_borders=all` on ORS; otherwise return 422 `ROUTE_LEAVES_SUPPORTED_AREA`.
 
 ### 6.3 Resilience and call budget
 | Situation | Calls |
@@ -131,10 +150,10 @@ Three counters are reported in `meta.routing`:
 | Counter | Counts | Core `City, ST` request | Cap |
 |---|---|---|---|
 | `routing_calls` | directions requests, including fallback and border re-route | 1 | 3 |
-| `geocode_calls` | optional free-text address lookups only | 0 | `MAX_GEOCODE_CALLS=2` |
+| `geocode_calls` | reserved for a future geocoder; not implemented | always 0 | n/a |
 | `external_calls` | sum of the above | 1 | derived |
 
-Worst realistic case on the optional address path with a primary failure is 2 geocode + ORS + OSRM = 4 external calls, of which only 2 are routing calls. The assignment's concern is excessive routing-API calls, so the guarantee is stated on `routing_calls`. If the geocoder is the same vendor as the router, an assessor may count geocodes as map-API calls, which is why that path is off by default.
+With no geocoder implemented, `external_calls` equals `routing_calls` (at most 2 with a primary failure and fallback). The counters are kept so a future geocoder can be counted separately; the guarantee is stated on `routing_calls`.
 
 - Only transient failures retry or fall back.
 - Circuit breaker: `CLOSED → OPEN (after repeated failures) → HALF_OPEN → CLOSED/OPEN`, lightweight and in-process.
@@ -173,7 +192,7 @@ FREE_OFFSET = 5 miles (absorbs centroid error),  G_REF = 25 gal (typical purchas
 
 `effective_price` is a **ranking proxy** that folds in estimated detour fuel. It is not an exact detour cost: station coordinates are city centroids and no extra routing calls are made per station. The optimizer ranks on this price; the response reports **real** prices and cash. Set `FREE_OFFSET` very large to disable it. Example: a $3.00 station 40 miles off-route ranks at about $3.84 and loses to a $3.10 station 2 miles off-route.
 
-The optimality claim is therefore: **optimal for the detour-adjusted fixed-route planning instance, not globally optimal physical driving cost.**
+The optimality claim is therefore: **optimal for the modeled fixed-route planning problem**: the provider's single route, candidate stations within a corridor (city-centroid positions), and a detour-adjusted ranking price. It is not globally optimal real-world fuel cost including actual detours.
 
 ### 7.4 Optimizer (corrected)
 Nodes: origin (cannot buy), candidate stations (sorted by position), destination (**price 0, cannot buy**). Capacity `G = max_range / mpg` (50 gal at defaults); start full.
@@ -270,7 +289,7 @@ estimated_total_fuel_cost_usd
   "meta": {
     "request_id": "...",
     "routing":  {"provider": "ors", "routing_calls": 1, "geocode_calls": 0, "external_calls": 1,
-                 "fallback_used": false, "route_leaves_usa": false},
+                 "fallback_used": false, "us_only_reroute": false},
     "cache":    {"route": "miss", "layer": null},
     "planning": {"candidate_stations": 42, "selected_stops": 5, "corridor_miles_used": 8,
                  "corridor_widened": false, "algorithm": "next_cheaper_greedy",
@@ -333,7 +352,7 @@ manage.py  pyproject.toml  Makefile  Dockerfile  docker-compose.yml  .env.exampl
 config/     settings.py  asgi.py  urls.py
 api/        views.py  schemas.py  errors.py  middleware.py  apps.py  urls.py  map.html
 stations/   etl.py  store.py  management/commands/build_stations.py
-routing/    providers.py (interface, ORS, OSRM, optional geocoder)  cache.py  singleflight.py  resolver.py  geometry.py  budget.py
+routing/    providers.py (interface, ORS, OSRM)  cache.py  singleflight.py  resolver.py  geometry.py  budget.py
 planner/    corridor.py  optimizer.py  cost.py
 data/       raw/fuel-prices-for-be-assessment.csv  gazetteer/ (gitignored)  build/ (committed artifacts)
 scripts/    bench.py
@@ -384,7 +403,7 @@ If this became a product: Django × N behind a load balancer, Redis cluster, Pos
 
 ---
 
-## 17. Implementation decisions (frozen)
+## 17. Implementation decisions
 
 **Scope**
 - No database, models, admin, templates, CSRF or auth. `DATABASES = {}`, `INSTALLED_APPS = ["api"]`, middleware: `GZipMiddleware` plus one custom middleware (request id, `Server-Timing`, per-IP rate limit). The map page is a static HTML file read once.
@@ -393,12 +412,12 @@ If this became a product: Django × N behind a load balancer, Redis cluster, Pos
 **Data**
 - Gazetteer: Census Gazetteer *places* national file (primary; strip the type suffix such as city/town/village/CDP; prefer non-CDP, then larger land area) plus GeoNames US populated places as a gap filler. Fuzzy match with `difflib` inside the state only, cutoff 0.88. Normalise `St.`→Saint, `Mt.`→Mount, `Ft.`→Fort, punctuation and case.
 - Artifacts in `data/build/`: `stations.npz` (id, price, lat, lon, name, address, city, state), `places.json` (`"ST|normalised name"` → lat, lon), contiguous-US polygon (Census nation boundary, simplified), `unmatched.csv`, `build_report.json`.
-- USA check: point inside the polygon buffered by about 0.1°. `route_leaves_usa`: more than 3 miles of the route outside the buffered polygon.
+- USA check: endpoints inside the US polygon buffered by 0.02°; route test per amendment 1 (supersedes the 0.1° / 3-mile rule).
 - Expected profile (from the supplied CSV): 8,151 rows; 620 Canadian rows dropped; 6,626 unique US stops; 26 identical duplicate rows; 487 stops with conflicting prices. Investigate any difference.
 
 **Routing and caching**
 - Providers return one `Route(polyline, distance_miles, duration_s, provider)`; unit conversion happens at the provider boundary. Coordinates are `[lng, lat]`. ORS: `POST`, key in the `Authorization` header, `instructions: false`, widened `radiuses`. OSRM: `overview=full&geometries=polyline&steps=false`. Both polylines are precision 5 unless verification says otherwise.
-- Policy: timeout, connect error, 429 and 5xx fall back to the other provider (no same-provider retry). A not-routable response maps to `422 LOCATION_NOT_ROUTABLE`. No fallback configured: `503 ROUTING_UNAVAILABLE`. Circuit breaker opens after 5 consecutive failures with a 30 s cooldown. Timeouts: connect 2 s, read 8 s.
+- Policy: timeout, connect error, 429 and 5xx fall back to the other provider (no same-provider retry). A not-routable response maps to `422 LOCATION_NOT_ROUTABLE`. No fallback configured: `503 ROUTING_UNAVAILABLE`. Circuit breaker opens after 5 consecutive failures with a 30 s cooldown. Timeouts: connect 2 s, read `ROUTING_TIMEOUT_S` (default 5 s).
 - Polyline decoding is vectorised numpy, tested against the standard vector ``_p~iF~ps|U_ulLnnqC_mqNvxq`@`` → (38.5, -120.2), (40.7, -120.95), (43.252, -126.453).
 - Cache: L1 `TTLCache` of bundles (max 256 entries, 7 days; 15 minutes for fallback routes); L2 Redis only when `REDIS_URL` is set.
 
@@ -409,10 +428,10 @@ If this became a product: Django × N behind a load balancer, Redis cluster, Pos
 - Display geometry: simplify at 150 m in EPSG:5070, convert back to lon/lat at 5 decimals, pre-serialise once with orjson and splice into the response.
 
 **Runtime**
-- Run with `uvicorn config.asgi:application --workers $WEB_CONCURRENCY`.
+- Run with `python scripts/serve.py` (see Server row for why not `uvicorn --workers`).
 - Rate limit: fixed window per IP, default 120/min (Redis if configured, else in-memory).
-- Environment: `ROUTING_PROVIDER`, `ORS_BASE_URL`, `ORS_API_KEY`, `OSRM_BASE_URL`, `REDIS_URL`, `WEB_CONCURRENCY`, `START_TANK_BILLING=reference`, `STATION_PRICE_RULE=min`, `ENABLE_GEOCODER=false`, `MAX_ROUTING_CALLS=3`, `MAX_GEOCODE_CALLS=2`, `RATE_LIMIT_PER_MIN=120`.
-- Optional geocoder: a minimal adapter behind `ENABLE_GEOCODER` (default off), counted in `geocode_calls`. Verify its endpoint before use.
+- Environment: `ROUTING_PROVIDER`, `ORS_BASE_URL`, `ORS_API_KEY`, `OSRM_BASE_URL`, `REDIS_URL`, `WEB_CONCURRENCY`, `START_TANK_BILLING=reference`, `STATION_PRICE_RULE=min`, `MAX_ROUTING_CALLS=3`, `RATE_LIMIT_PER_MIN=0` (off), `ROUTING_TIMEOUT_S=5`, `RESERVE_MILES`, `FREE_OFFSET_MILES`, `G_REF_GALLONS` (see `.env.example`).
+- Geocoder: not implemented (see section 4 and amendment 5); `geocode_calls` is reserved and always 0.
 
 **Tests**
 - `conftest.py` sets `DJANGO_SETTINGS_MODULE`, calls `django.setup()`, and uses `django.test.AsyncClient`, a small synthetic station artifact, and respx mocks. One smoke test runs against the real artifact when it exists.

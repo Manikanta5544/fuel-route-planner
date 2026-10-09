@@ -44,6 +44,7 @@ def build_runtime(store, places, usa, price_rule: str = "min") -> Runtime:
         settings.ORS_BASE_URL,
         settings.ORS_API_KEY,
         settings.OSRM_BASE_URL,
+        settings.ROUTING_TIMEOUT_S,
     )
     redis_factory = make_redis_factory(settings.REDIS_URL) if settings.REDIS_URL else None
     cache = RouteCache(router, lambda route: build_bundle(route, store, usa), redis_factory)

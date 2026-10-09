@@ -16,6 +16,7 @@ from planner.corridor import full_geometry_json, plan_route, trivial_bundle
 from planner.cost import summarize
 from routing.budget import CallBudget
 from routing.cache import Lookup
+from routing.resolver import Resolved
 
 log = logging.getLogger("api")
 MAP_HTML = (Path(__file__).parent / "map.html").read_bytes()
@@ -32,21 +33,31 @@ def _r(value, digits):
     return None if value is None else round(value, digits)
 
 
-def _resolve(rt, location, label: str) -> tuple[float, float]:
+def _resolve(rt, location, label: str) -> Resolved:
     if isinstance(location, Point):
-        point = (location.lat, location.lng)
+        found = Resolved(location.lat, location.lng, "coordinates")
     else:
-        point = rt.places.resolve(location)
-        if point is None:
+        found = rt.places.resolve(location)
+        if found is None:
             raise ApiError(
                 422,
                 OUTSIDE,
-                f"Could not resolve {label} {location!r}; "
-                "use 'City, ST' in the contiguous USA, or lat/lng coordinates",
+                f"Could not resolve {label} {location!r}; use 'City, ST' for a city in the "
+                "contiguous USA, or lat/lng coordinates",
             )
-    if not rt.usa.contains(*point):
+    if not rt.usa.contains(found.lat, found.lng):
         raise ApiError(422, OUTSIDE, f"The {label} location is outside the contiguous USA")
-    return point
+    return found
+
+
+def _located(found: Resolved, text) -> dict:
+    return {
+        "input": text if isinstance(text, str) else None,
+        "lat": round(found.lat, 5),
+        "lng": round(found.lng, 5),
+        "precision": found.precision,
+        "matched": found.matched,
+    }
 
 
 def _label(location) -> str:
@@ -68,7 +79,8 @@ async def route(request):
     except orjson.JSONDecodeError as exc:
         raise ApiError(400, "INVALID_REQUEST", "Body must be valid JSON") from exc
     req = RouteRequest.model_validate(data)
-    start, finish = _resolve(rt, req.start, "start"), _resolve(rt, req.finish, "finish")
+    origin, target = _resolve(rt, req.start, "start"), _resolve(rt, req.finish, "finish")
+    start, finish = (origin.lat, origin.lng), (target.lat, target.lng)
 
     budget = CallBudget(settings.MAX_ROUTING_CALLS)
     t0 = perf_counter()
@@ -142,6 +154,11 @@ async def route(request):
         ("estimated_total_fuel_cost_usd", 2),
     ):
         fuel[key] = _r(fuel[key], digits)
+    fuel["estimate_basis"] = (
+        "cash_spent_at_stops_usd + initial_fuel.gallons x initial_fuel.reference_price_per_gallon"
+        if fuel["estimated_total_fuel_cost_usd"] is not None
+        else "not estimated: the initial tank has no price (see initial_fuel.valuation)"
+    )
 
     query = {"start": _label(req.start), "finish": _label(req.finish)}
     query |= {k: getattr(req, k) for k in ("mpg", "max_range_miles") if k in req.model_fields_set}
@@ -166,7 +183,7 @@ async def route(request):
                 "geocode_calls": budget.geocode_calls,
                 "external_calls": budget.external_calls,
                 "fallback_used": bundle.fallback,
-                "route_leaves_usa": bundle.leaves_usa,
+                "us_only_reroute": bundle.border_avoided,
             },
             "cache": {
                 "route": lookup.source,
@@ -180,6 +197,10 @@ async def route(request):
                 "corridor_widened": plan.corridor_miles > 15,
                 "algorithm": "next_cheaper_greedy",
                 "model": "fixed_route_detour_adjusted_ranking_price",
+                "optimality": (
+                    "cost-optimal among the candidate stations within corridor_miles_used of the "
+                    "route, ranked by detour-adjusted price; not a global optimum"
+                ),
             },
             "performance": {
                 "routing_ms": round(routing_ms, 1),
@@ -193,8 +214,15 @@ async def route(request):
                 "initial_fuel_full": True,
                 "start_tank_billing": settings.START_TANK_BILLING,
                 "station_price_rule": PRICE_RULE_NAMES.get(rt.price_rule, rt.price_rule),
-                "geo_precision": "city_centroid",
+                "station_location_precision": "city_centroid",
             },
+            "locations": {
+                "start": _located(origin, req.start),
+                "finish": _located(target, req.finish),
+            },
+            "warnings": [
+                f"{w}: {n}" for w, n in (("start", origin.note), ("finish", target.note)) if n
+            ],
         },
     }
     t2 = perf_counter()

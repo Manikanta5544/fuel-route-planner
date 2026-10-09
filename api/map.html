@@ -4,14 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fuel Route Planner</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin=""></script>
 <style>
   body { margin: 0; font: 14px system-ui, sans-serif; display: flex; flex-direction: column; height: 100vh; }
   form { display: flex; gap: 8px; padding: 8px; flex-wrap: wrap; align-items: center; }
   input { padding: 6px; min-width: 200px; }
   #summary { padding: 0 8px 8px; }
   #map { flex: 1; }
+  #notice { padding: 0 8px; color: #b45309; }
+  #error { padding: 0 8px; color: #b91c1c; }
+  table { border-collapse: collapse; margin: 0 8px 8px; font-size: 13px; }
+  th, td { border: 1px solid #ddd; padding: 3px 8px; text-align: left; }
   .pin { background: #1d4ed8; color: #fff; border-radius: 50%; width: 24px; height: 24px;
          line-height: 24px; text-align: center; font-weight: 600; border: 2px solid #fff; }
 </style>
@@ -23,6 +29,9 @@
   <button>Plan route</button>
 </form>
 <div id="summary"></div>
+<div id="error" role="alert"></div>
+<div id="notice"></div>
+<div id="stops"></div>
 <div id="map"></div>
 <script>
 const params = new URLSearchParams(location.search);
@@ -30,11 +39,23 @@ const startEl = document.getElementById("start"), finishEl = document.getElement
 const summary = document.getElementById("summary");
 startEl.value = params.get("start") || "";
 finishEl.value = params.get("finish") || "";
-const map = L.map("map").setView([39.5, -98.35], 4);
-L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  maxZoom: 18, attribution: "&copy; OpenStreetMap contributors",
-}).addTo(map);
-let layer = L.layerGroup().addTo(map);
+const errorEl = document.getElementById("error"), noticeEl = document.getElementById("notice");
+const stopsEl = document.getElementById("stops");
+const hasLeaflet = typeof L !== "undefined";
+let map = null, layer = null;
+if (hasLeaflet) {
+  map = L.map("map").setView([39.5, -98.35], 4);
+  const tiles = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 18, attribution: "&copy; OpenStreetMap contributors",
+  }).addTo(map);
+  let tileErrors = 0;
+  tiles.on("tileerror", () => {
+    if (++tileErrors === 3) noticeEl.textContent = "Map tiles could not be loaded; the route is still drawn.";
+  });
+  layer = L.layerGroup().addTo(map);
+} else {
+  noticeEl.textContent = "The map library could not be loaded (offline?). Results are shown as text below.";
+}
 
 function parseLocation(text) {
   const m = text.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
@@ -56,28 +77,64 @@ function popup(stop) {
   return el;
 }
 
+function renderStops(stops) {
+  stopsEl.replaceChildren();
+  if (!stops.length) return;
+  const table = document.createElement("table");
+  const head = table.insertRow();
+  ["#", "Station", "Location", "Mile", "Off route", "$/gal", "Gallons", "Cost"].forEach((h) => {
+    const th = document.createElement("th"); th.textContent = h; head.appendChild(th);
+  });
+  stops.forEach((s) => {
+    const row = table.insertRow();
+    [s.order, s.name, `${s.city}, ${s.state}`, s.mile_marker, `${s.off_route_miles} mi`,
+     `$${s.price_per_gallon}`, s.gallons_purchased, `$${s.cost_usd}`].forEach((v) => {
+      row.insertCell().textContent = v;
+    });
+  });
+  stopsEl.appendChild(table);
+}
+
 async function plan() {
   const body = { start: parseLocation(startEl.value), finish: parseLocation(finishEl.value) };
   for (const key of ["mpg", "max_range_miles"]) if (params.has(key)) body[key] = Number(params.get(key));
   summary.textContent = "Planning...";
-  const resp = await fetch("/api/v1/route", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-  });
-  const data = await resp.json();
-  layer.clearLayers();
-  if (!resp.ok) { summary.textContent = data.error.message; return; }
-  const coords = data.route.geometry.coordinates.map(([lng, lat]) => [lat, lng]);
-  const line = L.polyline(coords, { color: "#1d4ed8", weight: 4 }).addTo(layer);
-  L.marker(coords[0]).bindPopup("Start").addTo(layer);
-  L.marker(coords[coords.length - 1]).bindPopup("Finish").addTo(layer);
-  data.fuel_stops.forEach((s) => {
-    const icon = L.divIcon({ className: "", html: `<div class="pin">${s.order}</div>`, iconSize: [24, 24] });
-    L.marker([s.lat, s.lng], { icon }).bindPopup(popup(s)).addTo(layer);
-  });
-  map.fitBounds(line.getBounds());
+  stopsEl.replaceChildren();
+  if (layer) layer.clearLayers();
+  let data;
+  try {
+    const resp = await fetch("/api/v1/route", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    data = await resp.json();
+    if (!resp.ok) {
+      summary.textContent = "";
+      errorEl.textContent = (data.error && data.error.message) || `Request failed (${resp.status})`;
+      return;
+    }
+  } catch (err) {
+    summary.textContent = "";
+    errorEl.textContent = "Could not reach the planner API.";
+    return;
+  }
+  errorEl.textContent = "";
+  if (layer) {
+    const coords = data.route.geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+    const line = L.polyline(coords, { color: "#1d4ed8", weight: 4 }).addTo(layer);
+    L.marker(coords[0]).bindPopup("Start").addTo(layer);
+    L.marker(coords[coords.length - 1]).bindPopup("Finish").addTo(layer);
+    data.fuel_stops.forEach((s) => {
+      const icon = L.divIcon({ className: "", html: `<div class="pin">${s.order}</div>`, iconSize: [24, 24] });
+      L.marker([s.lat, s.lng], { icon }).bindPopup(popup(s)).addTo(layer);
+    });
+    map.fitBounds(line.getBounds());
+  }
+  renderStops(data.fuel_stops);
   const f = data.fuel;
   summary.textContent = `${data.route.distance_miles} mi, ${data.fuel_stops.length} stops, ` +
     `cash at stops $${f.cash_spent_at_stops_usd}, estimated total fuel cost $${f.estimated_total_fuel_cost_usd}`;
+  const warnings = data.warnings || [];
+  if (warnings.length) noticeEl.textContent = warnings.map((w) => w.message || w).join(" ");
 }
 
 document.getElementById("form").addEventListener("submit", (e) => { e.preventDefault(); plan(); });

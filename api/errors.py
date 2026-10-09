@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from planner.corridor import Infeasible
 from routing.budget import BudgetExceeded
-from routing.providers import NotRoutable, RoutingUnavailable
+from routing.providers import NotRoutable, RouteLeavesUSA, RoutingUnavailable
 
 log = logging.getLogger("api")
 
@@ -45,9 +45,15 @@ def api_view(view):
         except NotRoutable:
             msg = "No drivable road found near one of the locations, or no route exists"
             return error_response(422, "LOCATION_NOT_ROUTABLE", msg, rid)
-        except Infeasible:
-            msg = "No fuel plan exists: a stretch of the route has no reachable station"
-            return error_response(422, "NO_FEASIBLE_FUEL_PLAN", msg, rid)
+        except RouteLeavesUSA:
+            msg = (
+                "The driving route between these locations enters Canada or Mexico, which the "
+                "US fuel-price data does not cover, and no route that stays in the US could be "
+                "obtained (border avoidance needs an ORS_API_KEY)"
+            )
+            return error_response(422, "ROUTE_LEAVES_SUPPORTED_AREA", msg, rid)
+        except Infeasible as exc:
+            return error_response(422, "NO_FEASIBLE_FUEL_PLAN", str(exc), rid)
         except (RoutingUnavailable, BudgetExceeded):
             return error_response(
                 503, "ROUTING_UNAVAILABLE", "Routing is temporarily unavailable", rid

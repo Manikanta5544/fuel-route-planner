@@ -65,17 +65,22 @@ def summarize(name, results, elapsed, stub_calls):
         "error_rate": round(1 - len(lat) / len(results), 4),
         "routing_calls_per_request": round(calls / len(results), 3),
         "stub_upstream_calls": stub_calls,
+        "server_planning_ms_p50": round(
+            pct([m["performance"]["planning_ms"] for m in metas], 50), 2
+        ),
+        "server_total_ms_p50": round(pct([m["performance"]["total_ms"] for m in metas], 50), 2),
         "cache_hit_ratio": round(hits / len(metas), 3),
     }
     print(json.dumps(row))
     return row
 
 
-def body(i):
+def body(i, **extra):
     """Distinct, valid coordinates inside the USA (the stub returns the same route)."""
     return {
         "start": {"lat": 32.7767 + i * 0.0001, "lng": -96.797},
         "finish": {"lat": 40.7128 + i * 0.0001, "lng": -74.006},
+        **extra,
     }
 
 
@@ -100,6 +105,22 @@ async def scenarios(args, stub_calls):
         before = stub_calls()
         results, elapsed = await run(c, [body(10 + i) for i in range(n)], 1)
         rows.append(summarize("cold", results, elapsed, stub_calls() - before))
+        # same route, different mpg / different max range: the route cache is independent of both
+        before = stub_calls()
+        await run(c, [body(3000)], 1)  # one cold request for this route
+        results, elapsed = await run(
+            c, [body(3000, mpg=8 + i % 10) for i in range(100)], args.concurrency
+        )
+        rows.append(
+            summarize("same-route-different-mpg", results, elapsed, stub_calls() - before - 1)
+        )
+        before = stub_calls()
+        results, elapsed = await run(
+            c, [body(3000, max_range_miles=300 + i * 2) for i in range(100)], args.concurrency
+        )
+        rows.append(
+            summarize("same-route-different-range", results, elapsed, stub_calls() - before)
+        )
         before = stub_calls()
         results, elapsed = await run(c, [body(5000)] * 100, 100)
         rows.append(summarize("identical-concurrent(100)", results, elapsed, stub_calls() - before))

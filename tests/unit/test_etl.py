@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from shapely.geometry import box
 
 from stations import etl
 
@@ -65,7 +66,7 @@ def test_fuzzy_match_is_state_scoped_and_unmatched_are_reported():
         {"id": "1", "city": "Mc Kinney", "state": "TX", "price": 3.0},
         {"id": "2", "city": "Nowhereville", "state": "TX", "price": 3.0},
     ]
-    matched, unmatched, methods = etl.join_coordinates(stations, places)
+    matched, unmatched, methods = etl.join_coordinates(stations, places, box(-125, 24, -66, 50))
     assert [m["lat"] for m in matched] == [33.2] and methods == {"fuzzy": 1}
     assert unmatched[0]["reason"] == "no_gazetteer_match"
 
@@ -93,5 +94,29 @@ def test_committed_artifacts_are_valid():
         assert len(set(npz["id"])) == n
     places = json.loads((BUILD / "places.json").read_text())
     assert places["TX|dallas"] and places["NY|new york"] and len(places) > 20000
-    usa = json.loads((BUILD / "usa.geojson").read_text())
-    assert usa["type"] in ("Polygon", "MultiPolygon")
+    for name in ("usa.geojson", "foreign.geojson"):
+        assert json.loads((BUILD / name).read_text())["type"] in ("Polygon", "MultiPolygon")
+
+
+def test_build_territories_keeps_islands_and_clips_the_neighbour_band(tmp_path):
+    def feature(code, polygons):
+        return {
+            "properties": {"ADM0_A3": code},
+            "geometry": {"type": "MultiPolygon", "coordinates": polygons},
+        }
+
+    sq = lambda x0, y0, x1, y1: [[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]]  # noqa: E731
+    features = [
+        feature("USA", [sq(-100, 30, -90, 40), sq(-81, 24.5, -80.9, 24.6), sq(-155, 19, -154, 20)]),
+        feature("CAN", [sq(-110, 40, -80, 60)]),
+        feature("MEX", [sq(-110, 10, -90, 30)]),
+    ]
+    path = tmp_path / "ne.geojson"
+    path.write_text(json.dumps({"features": features}))
+    us, foreign = etl.build_territories(path)
+    from shapely.geometry import Point, shape
+
+    us, foreign = shape(us), shape(foreign)
+    assert us.contains(Point(-95, 35)) and us.contains(Point(-80.95, 24.55))  # island kept
+    assert not us.contains(Point(-154.5, 19.5))  # Hawaii dropped
+    assert foreign.contains(Point(-95, 40.5)) and not foreign.contains(Point(-95, 55))  # banded

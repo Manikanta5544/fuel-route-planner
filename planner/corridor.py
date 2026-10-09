@@ -21,7 +21,7 @@ _EMPTY = np.empty(0)
 
 
 class Infeasible(Exception):
-    """No fuel plan exists even with the widest corridor."""
+    """No fuel plan exists even with the widest corridor; the message names the uncovered gap."""
 
 
 @dataclass(slots=True)

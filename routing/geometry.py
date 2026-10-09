@@ -1,4 +1,4 @@
-"""Polyline decoding, EPSG:5070 projection and the USA polygon check. Coordinates: (lat, lng)."""
+"""Polyline decoding, EPSG:5070 projection and the US territory checks. Coordinates: (lat, lng)."""
 
 import threading
 
@@ -41,18 +41,26 @@ def decode_polyline(encoded: str, precision: int = 5) -> np.ndarray:
 
 
 class UsaArea:
-    """Contiguous-US polygon buffered by ~0.1 degrees."""
+    """Where requests may start/end (contiguous US) and what counts as leaving the country."""
 
-    def __init__(self, geojson: dict, buffer_deg: float = 0.1):
-        self._ll = shape(geojson).buffer(buffer_deg)
-        shapely.prepare(self._ll)
-        self._xy = shapely.transform(self._ll, lambda c: np.column_stack(to_xy(c[:, 0], c[:, 1])))
-        shapely.prepare(self._xy)
+    def __init__(self, us_geojson: dict, foreign_geojson: dict, buffer_deg: float = 0.02):
+        self._us = shape(us_geojson).buffer(buffer_deg)
+        foreign = shape(foreign_geojson)
+        self._foreign = shapely.transform(
+            foreign, lambda c: np.column_stack(to_xy(c[:, 0], c[:, 1]))
+        )
+        shapely.prepare(self._us)
+        shapely.prepare(self._foreign)
+        # Prepared geometries build their index on first use; do it here, before worker threads.
+        self.contains(39.0, -98.0)
+        shapely.intersects(self._foreign, shapely.points(0.0, 0.0))
 
     def contains(self, lat: float, lng: float) -> bool:
-        return bool(shapely.contains_xy(self._ll, lng, lat))
+        return bool(shapely.contains_xy(self._us, lng, lat))
 
-    def miles_outside(self, line_xy: LineString) -> float:
-        if shapely.contains(self._xy, line_xy):
+    def foreign_miles(self, line_xy: LineString) -> float:
+        """Longest unbroken stretch of the route (EPSG:5070) inside Canada or Mexico, in miles."""
+        if not shapely.intersects(self._foreign, line_xy):
             return 0.0
-        return line_xy.difference(self._xy).length / METRES_PER_MILE
+        inside = shapely.intersection(line_xy, self._foreign)
+        return float(max(shapely.length(g) for g in shapely.get_parts(inside))) / METRES_PER_MILE

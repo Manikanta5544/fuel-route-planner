@@ -4,6 +4,7 @@ Providers speak [lng, lat]; everything else uses (lat, lng). Metres become miles
 """
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass
 from typing import Protocol
@@ -13,8 +14,10 @@ import httpx
 from routing.budget import CallBudget
 from routing.geometry import METRES_PER_MILE
 
+log = logging.getLogger("routing")
 USER_AGENT = "fuel-route-planner/1.0 (assessment project)"
 Coordinate = tuple[float, float]  # (lat, lng)
+_read_timeout_s = 5.0
 
 
 class NotRoutable(Exception):
@@ -29,6 +32,10 @@ class RoutingUnavailable(Exception):
     """Every configured provider failed or is circuit-open."""
 
 
+class RouteLeavesUSA(Exception):
+    """The driving route enters Canada or Mexico and no border-free route could be obtained."""
+
+
 @dataclass(frozen=True, slots=True)
 class Route:
     polyline: str
@@ -39,9 +46,15 @@ class Route:
 
 class Provider(Protocol):
     name: str
+    supports_border_avoidance: bool
 
     async def route(
-        self, start: Coordinate, finish: Coordinate, *, budget: CallBudget
+        self,
+        start: Coordinate,
+        finish: Coordinate,
+        *,
+        budget: CallBudget,
+        avoid_borders: bool = False,
     ) -> Route: ...
 
 
@@ -54,7 +67,7 @@ def get_client() -> httpx.AsyncClient:
     loop = asyncio.get_running_loop()
     if _client is None or _client[0] is not loop:
         client = httpx.AsyncClient(
-            timeout=httpx.Timeout(8.0, connect=2.0),
+            timeout=httpx.Timeout(_read_timeout_s, connect=2.0),
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
             headers={"User-Agent": USER_AGENT},
         )
@@ -84,17 +97,27 @@ def _parse(provider: str, polyline, metres, seconds) -> Route:
 
 class ORSProvider:
     name = "ors"
+    supports_border_avoidance = True
 
     def __init__(self, base_url: str, api_key: str):
         self.url = f"{base_url.rstrip('/')}/v2/directions/driving-car"
         self.headers = {"Authorization": api_key}
 
-    async def route(self, start: Coordinate, finish: Coordinate, *, budget: CallBudget) -> Route:
+    async def route(
+        self,
+        start: Coordinate,
+        finish: Coordinate,
+        *,
+        budget: CallBudget,
+        avoid_borders: bool = False,
+    ) -> Route:
         body = {
             "coordinates": [[start[1], start[0]], [finish[1], finish[0]]],
             "radiuses": [-1, -1],
             "instructions": False,
         }
+        if avoid_borders:
+            body["options"] = {"avoid_borders": "all"}
         budget.spend_routing()
         resp = await _send(lambda c: c.post(self.url, json=body, headers=self.headers))
         _classify(resp)
@@ -109,11 +132,21 @@ class ORSProvider:
 
 class OSRMProvider:
     name = "osrm"
+    supports_border_avoidance = False
 
     def __init__(self, base_url: str):
         self.base = f"{base_url.rstrip('/')}/route/v1/driving"
 
-    async def route(self, start: Coordinate, finish: Coordinate, *, budget: CallBudget) -> Route:
+    async def route(
+        self,
+        start: Coordinate,
+        finish: Coordinate,
+        *,
+        budget: CallBudget,
+        avoid_borders: bool = False,
+    ) -> Route:
+        if avoid_borders:
+            raise NotRoutable("OSRM cannot avoid borders")
         url = f"{self.base}/{start[1]},{start[0]};{finish[1]},{finish[0]}"
         params = {"overview": "full", "geometries": "polyline", "steps": "false"}
         budget.spend_routing()
@@ -168,11 +201,13 @@ class Router:
         for position, provider in enumerate(self.providers):
             breaker = self.breakers[provider.name]
             if not breaker.allow():
+                log.warning("routing provider %s skipped: circuit open", provider.name)
                 continue
             try:
                 route = await provider.route(start, finish, budget=budget)
-            except TransientError:
+            except TransientError as exc:
                 breaker.failure()
+                log.warning("routing provider %s failed: %s", provider.name, exc)
                 continue
             except NotRoutable:
                 breaker.success()
@@ -181,9 +216,44 @@ class Router:
             return route, position > 0
         raise RoutingUnavailable
 
+    async def route_us_only(self, start: Coordinate, finish: Coordinate, budget: CallBudget):
+        """Ask a border-avoiding provider for a route that stays in the US.
 
-def build_router(provider: str, ors_base_url: str, ors_api_key: str, osrm_base_url: str) -> Router:
+        Raises RouteLeavesUSA when no configured provider can promise that (OSRM cannot) or
+        the provider finds none, and RoutingUnavailable when the attempt failed transiently.
+        """
+        for provider in self.providers:
+            if not provider.supports_border_avoidance:
+                continue
+            breaker = self.breakers[provider.name]
+            if not breaker.allow():
+                raise RoutingUnavailable
+            try:
+                route = await provider.route(start, finish, budget=budget, avoid_borders=True)
+            except TransientError as exc:
+                breaker.failure()
+                log.warning(
+                    "routing provider %s failed on border avoidance: %s", provider.name, exc
+                )
+                raise RoutingUnavailable from exc
+            except NotRoutable as exc:
+                breaker.success()
+                raise RouteLeavesUSA from exc
+            breaker.success()
+            return route
+        raise RouteLeavesUSA
+
+
+def build_router(
+    provider: str,
+    ors_base_url: str,
+    ors_api_key: str,
+    osrm_base_url: str,
+    read_timeout_s: float = 5.0,
+) -> Router:
     """ORS first when a key exists (and is not disabled), OSRM otherwise or as the fallback."""
+    global _read_timeout_s
+    _read_timeout_s = read_timeout_s
     osrm = OSRMProvider(osrm_base_url)
     if provider != "osrm" and ors_api_key:
         return Router([ORSProvider(ors_base_url, ors_api_key), osrm])

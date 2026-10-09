@@ -3,17 +3,112 @@
     "name": "Fuel Route Planner",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
-  "variable": [{"key": "base_url", "value": "http://localhost:8000"}],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000"
+    }
+  ],
   "item": [
     {
       "name": "Plan route (City, ST)",
       "request": {
         "method": "POST",
-        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
         "url": "{{base_url}}/api/v1/route",
         "body": {
           "mode": "raw",
           "raw": "{\n  \"start\": \"Dallas, TX\",\n  \"finish\": \"New York, NY\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Plan route (coordinates, 10 MPG, 500 mi)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{base_url}}/api/v1/route",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": {\n    \"lat\": 34.0522,\n    \"lng\": -118.2437\n  },\n  \"finish\": {\n    \"lat\": 41.8781,\n    \"lng\": -87.6298\n  },\n  \"mpg\": 10,\n  \"max_range_miles\": 500\n}"
+        }
+      }
+    },
+    {
+      "name": "What-if: 8 MPG, 350-mile range (no new routing call)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{base_url}}/api/v1/route",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"Dallas, TX\",\n  \"finish\": \"New York, NY\",\n  \"mpg\": 8,\n  \"max_range_miles\": 350\n}"
+        }
+      }
+    },
+    {
+      "name": "Error: range above 500 (400 INVALID_REQUEST)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{base_url}}/api/v1/route",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"Dallas, TX\",\n  \"finish\": \"New York, NY\",\n  \"max_range_miles\": 900\n}"
+        }
+      }
+    },
+    {
+      "name": "Error: outside the USA (422 LOCATION_OUTSIDE_SUPPORTED_AREA)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{base_url}}/api/v1/route",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"Dallas, TX\",\n  \"finish\": {\n    \"lat\": 43.65,\n    \"lng\": -79.38\n  }\n}"
+        }
+      }
+    },
+    {
+      "name": "Coverage gap (422 NO_FEASIBLE_FUEL_PLAN: few CA stations in CSV)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{base_url}}/api/v1/route",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"San Francisco, CA\",\n  \"finish\": \"Las Vegas, NV\"\n}"
         }
       }
     },
@@ -23,11 +118,24 @@
         "method": "GET",
         "url": {
           "raw": "{{base_url}}/api/v1/route/map?start=Dallas, TX&finish=New York, NY",
-          "host": ["{{base_url}}"],
-          "path": ["api", "v1", "route", "map"],
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "route",
+            "map"
+          ],
           "query": [
-            {"key": "start", "value": "Dallas, TX"},
-            {"key": "finish", "value": "New York, NY"}
+            {
+              "key": "start",
+              "value": "Dallas, TX"
+            },
+            {
+              "key": "finish",
+              "value": "New York, NY"
+            }
           ]
         }
       }

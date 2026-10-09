@@ -16,7 +16,7 @@ from routing.providers import Route
 CORRIDORS = (8.0, 15.0, 30.0, 50.0)
 QUERY_TOLERANCE_M = 500.0
 DISPLAY_TOLERANCE_M = 150.0
-LEAVES_USA_MILES = 3.0
+FOREIGN_MILES = 2.0  # one unbroken stretch this long inside Canada/Mexico means the route left
 _EMPTY = np.empty(0)
 
 
@@ -39,6 +39,7 @@ class Bundle:
     created: float = 0.0
     ttl: float = 0.0
     fallback: bool = False
+    border_avoided: bool = False  # the first route left the US; this one is the reroute
 
 
 @dataclass(slots=True)
@@ -98,7 +99,7 @@ def build_bundle(route: Route, store, usa) -> Bundle:
             round(float(v), 5)
             for v in (ll[:, 1].min(), ll[:, 0].min(), ll[:, 1].max(), ll[:, 0].max())
         ],
-        leaves_usa=usa.miles_outside(query) > LEAVES_USA_MILES if usa else False,
+        leaves_usa=bool(usa and usa.foreign_miles(query) > FOREIGN_MILES),
         idx=idx,
         pos=pos,
         off=off,
@@ -153,4 +154,9 @@ def plan_route(
             return PlanResult(
                 width, int(len(idx)), stops, cheapest, corridor_s * 1e3, optimize_s * 1e3
             )
-    raise Infeasible
+    marks = [0.0, *pos.tolist(), bundle.distance_miles]  # widest corridor, left over from the loop
+    gap, end = max((b - a, b) for a, b in zip(marks, marks[1:], strict=False))
+    raise Infeasible(
+        f"No fuel plan exists: no station within {width:.0f} miles of the route between mile "
+        f"{end - gap:.0f} and mile {end:.0f} ({gap:.0f} miles) for a {max_range:.0f}-mile range"
+    )

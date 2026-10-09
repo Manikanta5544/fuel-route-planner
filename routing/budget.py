@@ -11,7 +11,7 @@ class BudgetExceeded(Exception):
 class CallBudget:
     max_routing: int = 3
     routing_calls: int = 0
-    geocode_calls: int = 0  # reserved: the optional geocoder is not implemented, always 0
+    geocode_calls: int = 0  # always 0: there is no geocoder; kept so external_calls stays honest
 
     @property
     def external_calls(self) -> int:

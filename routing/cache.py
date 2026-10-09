@@ -9,7 +9,7 @@ import orjson
 from cachetools import TLRUCache
 
 from planner.corridor import Bundle
-from routing.providers import Coordinate, Route
+from routing.providers import Coordinate, Route, RouteLeavesUSA
 from routing.singleflight import SingleFlight
 
 ROUTE_TTL = 7 * 24 * 3600.0
@@ -17,10 +17,10 @@ FALLBACK_TTL = 15 * 60.0
 REDIS_COOLDOWN = 10.0
 
 
-def route_key(start: Coordinate, finish: Coordinate, profile="driving-car", borders="none") -> str:
+def route_key(start: Coordinate, finish: Coordinate) -> str:
+    """Rounded to 4 decimals (about 11 m). v2: only routes that stay in the US are stored."""
     ends = f"{start[0]:.4f},{start[1]:.4f}:{finish[0]:.4f},{finish[1]:.4f}"
-    raw = f"route:v1:{profile}:{borders}:{ends}"
-    return hashlib.sha1(raw.encode()).hexdigest()
+    return hashlib.sha1(f"route:v2:driving-car:us-only:{ends}".encode()).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +64,14 @@ class RouteCache:
                         return Lookup(bundle, "hit", "l2")
             route, fallback = await self.router.route(start, finish, budget)
             bundle = await asyncio.to_thread(self.build, route)
-            bundle.fallback = fallback
+            avoided = bundle.leaves_usa
+            if avoided:  # the fuel dataset is US-only: reroute around the border or refuse
+                route = await self.router.route_us_only(start, finish, budget)
+                bundle = await asyncio.to_thread(self.build, route)
+                if bundle.leaves_usa:
+                    raise RouteLeavesUSA
+                fallback = False
+            bundle.fallback, bundle.border_avoided = fallback, avoided
             bundle.ttl = FALLBACK_TTL if fallback else ROUTE_TTL
             self.l1[key] = bundle
             await self._to_l2(key, route, bundle)
@@ -109,13 +116,18 @@ class RouteCache:
             if remaining <= 0:
                 return None
             bundle = await asyncio.to_thread(self.build, Route(**data["route"]))
+            if bundle.leaves_usa:
+                return None
+            bundle.created, bundle.ttl = data["created"], remaining
+            bundle.fallback, bundle.border_avoided = data["fallback"], data["border_avoided"]
         except (ValueError, KeyError, TypeError):
             return None
-        bundle.created, bundle.ttl, bundle.fallback = data["created"], remaining, data["fallback"]
         self.l1[key] = bundle
         return bundle
 
     async def _to_l2(self, key: str, route: Route, bundle: Bundle) -> None:
+        if self._redis() is None:
+            return
         payload = {
             "route": {
                 "polyline": route.polyline,
@@ -126,5 +138,6 @@ class RouteCache:
             "created": bundle.created,
             "expires": bundle.created + bundle.ttl,
             "fallback": bundle.fallback,
+            "border_avoided": bundle.border_avoided,
         }
         await self._redis_call("set", key, orjson.dumps(payload), ex=int(bundle.ttl))

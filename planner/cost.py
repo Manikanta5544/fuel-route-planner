@@ -8,14 +8,16 @@ def summarize(purchases, route_miles: float, mpg: float, reference, billing: str
     cash = sum(g * p for g, p in purchases)
     start_tank = max(0.0, consumed - bought)
     ref_price, ref_station = reference if reference else (None, None)
-    included = billing == "reference" and (ref_price is not None or start_tank == 0)
-    estimate = cash + start_tank * (ref_price or 0.0) if included else None
-    if not included:
-        valuation = "excluded"
-    elif purchases:
-        valuation = "first_purchase_price"
+    if billing != "reference":
+        included, valuation = False, "excluded"
+    elif start_tank == 0:
+        included, valuation = True, "first_purchase_price" if purchases else "not_applicable"
+    elif ref_price is None:
+        included, valuation = False, "no_reference_station"
     else:
-        valuation = "cheapest_corridor_station" if ref_price is not None else "not_applicable"
+        included = True
+        valuation = "first_purchase_price" if purchases else "cheapest_corridor_station"
+    estimate = cash + start_tank * (ref_price or 0.0) if included else None
     return {
         "gallons_consumed": consumed,
         "gallons_purchased": bought,

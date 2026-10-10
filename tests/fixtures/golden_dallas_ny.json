@@ -1,16 +1,10 @@
 {
  "stops": [
   [
-   "68256",
-   165.2,
-   16.52,
-   46.54
-  ],
-  [
    "72594",
    169.4,
-   0.42,
-   1.21
+   16.94,
+   48.41
   ],
   [
    "71341",
@@ -34,7 +28,7 @@
  "fuel": {
   "gallons_consumed": 155.0,
   "gallons_purchased": 105.0,
-  "cash_spent_at_stops_usd": 301.73,
-  "estimated_total_fuel_cost_usd": 442.6
+  "cash_spent_at_stops_usd": 302.4,
+  "estimated_total_fuel_cost_usd": 445.26
  }
 }

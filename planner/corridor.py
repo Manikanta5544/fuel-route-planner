@@ -9,7 +9,7 @@ import shapely
 from shapely import STRtree
 from shapely.geometry import LineString
 
-from planner.optimizer import effective_price, plan_stops
+from planner.optimizer import effective_price, plan_stops, prune_unprofitable
 from routing.geometry import METRES_PER_MILE, decode_polyline, to_lonlat, to_xy
 from routing.providers import Route
 
@@ -58,6 +58,7 @@ class PlanResult:
     cheapest_idx: int | None
     corridor_ms: float = 0.0
     optimize_ms: float = 0.0
+    pruned: int = 0
 
 
 def build_bundle(route: Route, store, usa) -> Bundle:
@@ -149,10 +150,15 @@ def plan_route(
         corridor_s += t1 - t0
         optimize_s += time.perf_counter() - t1
         if buys is not None:
+            t2 = time.perf_counter()
+            buys, pruned = prune_unprofitable(
+                pos, price, off, bundle.distance_miles, buys, mpg=mpg, max_range=max_range
+            )
+            optimize_s += time.perf_counter() - t2
             stops = [Stop(int(idx[i]), float(pos[i]), float(off[i]), g) for i, g in buys]
             cheapest = int(idx[np.argmin(price)]) if len(idx) else None
             return PlanResult(
-                width, int(len(idx)), stops, cheapest, corridor_s * 1e3, optimize_s * 1e3
+                width, int(len(idx)), stops, cheapest, corridor_s * 1e3, optimize_s * 1e3, pruned
             )
     marks = [0.0, *pos.tolist(), bundle.distance_miles]  # widest corridor, left over from the loop
     gap, end = max((b - a, b) for a, b in zip(marks, marks[1:], strict=False))

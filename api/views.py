@@ -195,6 +195,8 @@ async def route(request):
                 "selected_stops": len(stops),
                 "corridor_miles_used": plan.corridor_miles,
                 "corridor_widened": plan.corridor_miles > 15,
+                "pruned_stops": plan.pruned,
+                "estimated_detour_miles": round(2 * sum(s.off for s in plan.stops), 1),
                 "algorithm": "next_cheaper_greedy",
                 "model": "fixed_route_detour_adjusted_ranking_price",
                 "optimality": (

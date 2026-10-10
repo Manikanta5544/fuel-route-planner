@@ -30,6 +30,8 @@ async def test_dallas_to_new_york_on_real_artifact(real_client):
             )
         },
     }
+    planning = j["meta"]["planning"]
+    assert planning["pruned_stops"] == 1 and planning["estimated_detour_miles"] > 0
     assert json.loads(json.dumps(got)) == golden
 
 

@@ -105,9 +105,15 @@ station positions as city-level.
 The plan is **optimal for the modeled fixed-route planning problem**: cost-optimal among candidate stations within `corridor_miles_used` of the provider's
 route (8 mi, widened 15/30/50 only if infeasible), using a detour-adjusted ranking price: `price + detour penalty` (`FREE_OFFSET_MILES=5`,
 `G_REF_GALLONS=25`). The detour model is a heuristic that turns "off-route distance" into dollars; the greedy ("buy just enough to reach the next
-cheaper station") is checked against an exact DP oracle on 3,000 random instances. It is not a global optimum over every possible road. Small top-ups
-(under 2 gal) occur in about one in five stops (6 of 32 in the region sweep) because buying less is cheaper when the next stop is cheaper; the objective
-was deliberately left unchanged, since an extra stop does not raise the total fuel cost the assignment asks for.
+cheaper station") is checked against an exact DP oracle on 3,000 random instances. It is not a global optimum over every possible road.
+
+**Stop pruning.** The ranking treats detours under 5 miles as free, so the greedy can pick a stop a few miles off the route for a tiny top-up (seen live on
+Los Angeles → Salt Lake City: a 1.57-gallon stop 3 mi off route saved $0.23 and burned about $1.90 of detour fuel). A second pass fixes this: for each
+stop it tries moving that stop's gallons into the previous or next stop, and keeps the change only if the plan stays physically feasible (the tank never
+goes below 0 or above 50 gal) and *cash plus real round-trip detour fuel* drops by at least one cent. It repeats until nothing improves, so it can only
+lower the modeled cost (property-tested). The response reports `meta.planning.pruned_stops` and `estimated_detour_miles`. Detour fuel is not added to the
+`fuel.*` totals, so a pruned plan can show a few cents more cash at stops while costing less in reality. On the region sweep it removed stops in 4 of 7
+trips and left no stop under 2 gal, apart from one on Houston → Atlanta.
 
 ### Station coordinates
 The CSV has no coordinates. Each station is placed at its **city centroid**, so mile markers and `off_route_miles` are approximate and several

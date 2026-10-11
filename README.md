@@ -135,7 +135,7 @@ street-level, so address geocoding was judged not worth a geocoder dependency. 6
 ## Verification status
 Verification happened in two stages; details and dates are in [FINAL_REVIEW.md](FINAL_REVIEW.md).
 
-**Automated (original build environment, no internet to providers):** `ruff` clean; **106 tests pass** with a live Redis (104 + 2 skipped without
+**Automated (original build environment, no internet to providers):** `ruff` clean; **109 tests pass** with a live Redis (107 + 2 skipped without
 `REDIS_URL`), including Hypothesis greedy-vs-DP (3,000 examples), seven cross-country trips through the real station artifact with provider-shaped
 mock routes (real city pairs and distances, synthetic polylines), the border reroute/refuse flow, 100-way coalescing, two separate-worker caches sharing
 one call via Redis, a 2-worker `serve.py` + Redis smoke test, and the map page in headless Chromium (tile failure and total CDN failure both degrade to
@@ -145,10 +145,10 @@ a message + stops table).
 - Docker Compose (app with `WEB_CONCURRENCY=2` + Redis) started healthy; `/healthz`, `/readyz` and Redis `PONG` passed.
 - A cached route survived an app restart and was served from Redis (`cache: hit`, `layer: l2`, `external_calls: 0`).
 - Live routing worked through OSRM and ORS (ORS returned HTTP 200 on requests; see the caveat below). Real-route trips returned plausible plans, e.g. Dallas → New York
-  (1,558 mi, 7 stops; 8 MPG / 350 mi range gave 11 stops), Los Angeles → Las Vegas (276 mi, 0 stops), Los Angeles → Salt Lake City (693 mi, 2 stops) and
-  Los Angeles → Dallas (1,432 mi, 7 stops); every reported leg stayed within the range.
+  (1,558 mi, 5 stops after pruning; 8 MPG / 350 mi range gave 11 stops), Los Angeles → Las Vegas (276 mi, 0 stops), Los Angeles → Salt Lake City (693 mi, 2 stops) and
+  Los Angeles → Dallas (1,432 mi); every reported leg stayed within the range.
 - The map page rendered routes, stops and totals in a desktop browser; Postman checks of valid and invalid inputs (MPG 0, missing finish, range 501) behaved as specified.
-- The full suite (106 tests) passed with Redis configured.
+- The full suite (109 tests) passed with Redis configured.
 
 **Not established:** ORS `avoid_borders` behaviour against the live service, sustained provider reliability or load, accuracy of every route in the
 USA, and production deployment. **Caveat:** some ORS requests timed out during manual testing; the fallback to OSRM engaged, but a cold request that

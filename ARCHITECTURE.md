@@ -358,7 +358,7 @@ Geometry is simplified by default, with `?geometry_detail=full` available, and r
 - **Unit:** location normalisation, USA polygon, price rule, projection, corridor, cost model, range boundaries (exactly 500 miles reachable within tolerance).
 - **Property (hypothesis):** greedy cost equals reference DP cost, on both plain and effective-price instances; infeasible cases agree.
 - **API (respx mocks):** cold, warm, 100 concurrent identical requests produce 1 upstream call, primary failure → fallback, cross-worker lock fail-open, leader cancellation, outside USA, non-routable point, infeasible plan, counter semantics (`routing_calls` vs `geocode_calls` vs `external_calls`), start equals finish, short trip costs a real figure.
-- **Golden:** one pinned route fixture (synthetic polyline, real station data; its plan includes the pruning pass) pinning stops, gallons, cost; also lets reviewers run the suite offline.
+- **Golden:** one pinned route fixture (synthetic polyline, real station data) pinning the stops, gallons and cost of the plan, which includes the pruning pass; it also lets reviewers run the suite offline.
 - **Latency:** `scripts/bench.py` (httpx + asyncio): warm, cold, identical-concurrent, distinct-concurrent. It reports p50/p95/p99, requests/sec, error rate, routing calls per request and cache hit ratio. The README states **measured** numbers with environment details. The benchmark table there uses a **stub provider** and says so; real-provider latency is reported separately and only as single observations.
 
 ---

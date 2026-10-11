@@ -20,9 +20,12 @@
 > 5. **Locations** return `meta.locations` (precision, matched place) and `meta.warnings`; `D.C.` and similar forms parse. Station precision is
 >    reported as `city_centroid`. No geocoder was added: only 5 of 6,626 CSV addresses are street-level, so the payoff is nil.
 > 6. **Optimality wording:** cost-optimal among candidate stations in the selected corridor under the detour-adjusted ranking model (a documented
->    heuristic), not a global optimum. The objective is unchanged.
+>    heuristic), not a global optimum. The ranking objective is unchanged; a post-greedy pruning pass (item 8) removes stops that are not worth their detour.
 > 7. **Infeasible** errors name the uncovered stretch (e.g. California in the supplied CSV).
-> 8. **Settings** validate choices and ranges at start-up; the map page has SRI hashes and degrades gracefully when Leaflet or tiles fail;
+> 8. **Stop pruning (post-greedy).** `planner/optimizer.prune_unprofitable` moves a stop's gallons into a neighbouring stop when the result stays feasible
+>    (fuel never below 0 or above the tank) and lowers cash plus round-trip detour fuel (`2 × off_route / mpg` gallons at that stop's price) by at least
+>    $0.01. It repeats to a fixed point and never raises the modeled cost. Reported as `meta.planning.pruned_stops` and `estimated_detour_miles`.
+> 9. **Settings** validate choices and ranges at start-up; the map page has SRI hashes and degrades gracefully when Leaflet or tiles fail;
 >    the container runs as non-root with health checks.
 
 ---
@@ -220,6 +223,13 @@ Complexity (n = indexed stations, k = corridor candidates):
 
 **Verification:** a reference DP (fuel discretised in 0.5-gal units) runs in the test suite (`tests/property/`, Hypothesis). In the design-time check, 3,000 random instances (up to 25 stations, trips up to 2,400 miles, range 500; 2,354 feasible and 646 infeasible) gave the same cost for the corrected greedy and the DP on every feasible instance, and the two agreed on every infeasible one; the earlier draft ordering did not. The permanent tests cover both plain and effective-price instances.
 
+**Pruning pass.** The ranking proxy in 7.3 treats offsets up to `FREE_OFFSET_MILES` as free and assumes a `G_REF_GALLONS` purchase, so it can keep a tiny
+top-up whose real detour fuel exceeds its saving. After the greedy, `prune_unprofitable` evaluates, for every stop, merging its gallons into the previous or
+next stop. A merge is accepted only if (a) the fuel level stays between 0 and capacity at every stop and at the destination, and (b) modeled cost
+(cash + detour fuel at the stop's price) falls by at least $0.01. The best merge is applied and the loop repeats. This is a local improvement, not a new
+global optimum, and the DP-oracle claim above applies to the greedy only. Property tests assert feasibility, non-increasing modeled cost, and conserved
+total gallons.
+
 ---
 
 ## 8. Cost model
@@ -298,7 +308,7 @@ estimated_total_fuel_cost_usd
     "cache":    {"route": "miss", "layer": null, "age_seconds": 0.0},
     "planning": {"candidate_stations": 42, "selected_stops": 5, "corridor_miles_used": 8,
                  "corridor_widened": false, "algorithm": "next_cheaper_greedy",
-                 "model": "fixed_route_detour_adjusted_ranking_price", "optimality": "..."},
+                 "model": "fixed_route_detour_adjusted_ranking_price", "optimality": "...", "pruned_stops": 0, "estimated_detour_miles": 0.0},
     "performance": {"routing_ms": 0, "planning_ms": 0, "total_ms": 0},
     "assumptions": {"mpg": 10, "max_range_miles": 500, "reserve_miles": 0,
                     "initial_fuel_full": true, "start_tank_billing": "reference",
@@ -348,7 +358,7 @@ Geometry is simplified by default, with `?geometry_detail=full` available, and r
 - **Unit:** location normalisation, USA polygon, price rule, projection, corridor, cost model, range boundaries (exactly 500 miles reachable within tolerance).
 - **Property (hypothesis):** greedy cost equals reference DP cost, on both plain and effective-price instances; infeasible cases agree.
 - **API (respx mocks):** cold, warm, 100 concurrent identical requests produce 1 upstream call, primary failure → fallback, cross-worker lock fail-open, leader cancellation, outside USA, non-routable point, infeasible plan, counter semantics (`routing_calls` vs `geocode_calls` vs `external_calls`), start equals finish, short trip costs a real figure.
-- **Golden:** one recorded real route response (Dallas to New York) pinning stops, gallons, cost; also lets reviewers run the suite offline.
+- **Golden:** one pinned route fixture (synthetic polyline, real station data; its plan includes the pruning pass) pinning stops, gallons, cost; also lets reviewers run the suite offline.
 - **Latency:** `scripts/bench.py` (httpx + asyncio): warm, cold, identical-concurrent, distinct-concurrent. It reports p50/p95/p99, requests/sec, error rate, routing calls per request and cache hit ratio. The README states **measured** numbers with environment details. The benchmark table there uses a **stub provider** and says so; real-provider latency is reported separately and only as single observations.
 
 ---

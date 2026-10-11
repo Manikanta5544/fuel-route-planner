@@ -22,7 +22,7 @@ that environment blocked ORS, OSRM, Nominatim, Census, GeoNames, Docker Hub, unp
 | Input coverage | **Strong offline contract**: parser widened (`D.C.`, state names, address tail), `meta.locations` precision + `warnings`; no network geocoder | A bounded geocoder could not be verified here |
 | max_range ≤ 500 | **Enforced** (schema 50-500); mpg optional (default 10); route cache independent of both (tested: 1 provider call for 5 variants) | Assignment states 500 |
 | Fuel-cost semantics | **Done**: `cash_spent_at_stops_usd` (fact) vs `estimated_total_fuel_cost_usd` with explicit valuation basis; no misleading $0 | |
-| Small purchases | **Objective unchanged** (6 of 32 stops in the region sweep buy < 2 gal); documented | A change would alter proven optimality, and extra stops do not raise the total fuel cost |
+| Small purchases | **Addressed with a post-greedy pruning pass**; the ranking objective is unchanged | A live Los Angeles → Salt Lake City run showed a 1.57-gal stop 3 mi off route (saves $0.23, burns ~$1.90 detour fuel). Merging a stop's gallons into a neighbour is accepted only if feasible and cheaper including detour fuel; property-tested to never raise modeled cost. On the region sweep: Dallas→NY 6→4 stops, Seattle→Miami 13→9, LA→Chicago 6→5, Houston→Atlanta 5→4 |
 | Latency / cache / failure matrix | Measured and tested (below); no change needed beyond the border flow and L2 safety | |
 | Map | SRI hashes, graceful CDN/tile failure, stops table, error display; verified in headless Chromium | |
 | Docker | Non-root, `HEALTHCHECK`, deps from `pyproject.toml`, compose healthchecks, `ALLOWED_HOSTS` override fixed. Not built at that time (see Part 2) | No daemon |
@@ -33,20 +33,21 @@ that environment blocked ORS, OSRM, Nominatim, Census, GeoNames, Docker Hub, unp
   `avoid_borders=all`; OSRM or a still-crossing route gives 422 `ROUTE_LEAVES_SUPPORTED_AREA`. Counted in the 3-call budget; cached bundles record
   `border_avoided`; a stale cached L2 route that crosses is discarded. (Replaces the earlier coastline-polygon flag, which false-positived on bridges.)
 - **Errors:** `NO_FEASIBLE_FUEL_PLAN` now names the uncovered stretch and range.
+- **Stop pruning**: `planner/optimizer.prune_unprofitable`; new `meta.planning.pruned_stops1` and `estimated_detour_miles`
 - **API:** `max_range_miles` ≤ 500; `meta.locations`, `meta.warnings`, `us_only_reroute`, `optimality`, `estimate_basis`, `station_location_precision`.
 - **Config:** invalid enum/range values fail at start-up; `.env.example` lists every variable.
 - **Redis bug fixed:** numpy scalars broke L2 serialisation (found by the border tests); fixed and covered.
-- **Tests:** 74 → 106 (border flow, regions, schema cap, reuse of the route across mpg/range, locations, cost valuation, settings).
+- **Tests:** 74 → 109 (border flow, regions, schema cap, reuse of the route across mpg/range, locations, cost valuation, settings).
 - Docs: README rewritten, ARCHITECTURE amended, Postman extended, this file.
 
 ## Verified in the original environment
-- `ruff check` clean; `pytest`: 106 passed with a real `redis-server` (104 passed + 2 skipped without it).
+- `ruff check` clean; `pytest`: 109 passed with a real `redis-server` (107 passed + 2 skipped without it).
 - Hypothesis: greedy equals the DP oracle (3,000 examples, plain and effective prices, infeasible agreement).
 - 100 concurrent identical requests → 1 provider call (unit, API, and across two real workers via Redis).
 - `scripts/serve.py` with 2 workers + Redis + stub OSRM: `/readyz` 200; four requests, 1 upstream call; warm request 3.5-4.9 ms client-side.
 - Region sweep (real station data, **synthetic routes**). cash / estimate in USD:
-  Dallas→NY 1,550 mi 6 stops 301.62/441.65 · LA→Chicago 2,015 mi 6 stops 451.15/612.10 · Seattle→Miami 3,300 mi 13 stops 868.00/1,045.95 ·
-  NY→Boston 0 stops · Detroit→Buffalo (US-only route) 0 stops · Houston→Atlanta 790 mi 5 stops 82.31/219.76 · Phoenix→Denver 840 mi 2 stops 108.34/268.04.
+  Dallas→NY 1,550 mi, 4 stops, 302.32/445.19 · LA→Chicago 2,015 mi, 5 stops, 452.29/613.24 · Seattle→Miami 3,300 mi, 9 stops, 868.57/1,046.52 ·
+  NY→Boston 0 stops, 66.63 estimate · Detroit→Buffalo (US-only) 0 stops, 98.57 estimate · Houston→Atlanta 790 mi, 4 stops, 82.38/219.83 · Phoenix→Denver 840 mi, 2 stops, 108.34/268.04.
   All stops within the corridor, ≤ 500-mile gaps, plausible prices. SF→Las Vegas correctly returns 422 (CSV has 8 California stations).
 - Map: Leaflet from the npm tarball served under the real SRI hashes (accepted); with tiles blocked a notice appears and the route/pins/table render;
   with Leaflet blocked the text summary and stops table render, no JS errors.
@@ -68,10 +69,10 @@ These are manual results reported by the author. They show that the tested workf
 | Docker Compose | App (`WEB_CONCURRENCY=2`) and Redis containers started healthy; `/healthz` and `/readyz` passed; Redis answered `PONG` |
 | Cache persistence | A cached route survived an app restart and was served from Redis: `cache: hit`, `layer: l2`, `external_calls: 0` |
 | Live routing | OSRM and ORS both returned routes. Candidate counts of 55, 301 and 242 produced plans with 2, 7 and 10 stops; repeated requests made no new provider calls |
-| Real-route trips | Dallas → New York 1,558.2 mi, 7 stops, $443.14 estimated (8 MPG / 350 mi: 11 stops, $559.71). Los Angeles → Las Vegas 276.2 mi, 0 stops. Los Angeles → Salt Lake City 693.0 mi, 2 stops. Los Angeles → Dallas 1,431.7 mi, 7 stops, $274.96 cash / $435.91 estimated. Reported legs stayed within the 500-mile range in the LA→SLC and LA→Dallas checks |
+| Real-route trips | Dallas → New York 1,558.2 mi, 5 stops, $444.87, 2 pruned (8 MPG / 350 mi: 11 stops, $559.71). Los Angeles → Las Vegas 276.2 mi, 0 stops. Los Angeles → Salt Lake City 693.0 mi, 2 stops. Los Angeles → Dallas 1,431.7 mi, 7 stops, $274.96 cash / $435.91 estimated. Reported legs stayed within the 500-mile range in the LA→SLC and LA→Dallas checks |
 | Map page | Opened in a desktop browser; route, stops and totals rendered |
 | API (Postman) | City and coordinate inputs, changed MPG and range worked; MPG 0, missing finish and `max_range_miles=501` were rejected |
-| Automated suite | 106 passed, 0 failed, 0 skipped with Redis configured (an earlier run without Redis skipped 2) |
+| Automated suite | 109 passed, 0 failed, 0 skipped with Redis configured (an earlier run without Redis skipped 2) |
 | Provider latency | One cold Los Angeles → Las Vegas request through the public OSRM demo spent about 2.6 s in the routing call (single observation) |
 
 ## Open items
@@ -89,6 +90,6 @@ These are manual results reported by the author. They show that the tested workf
 ## Known limitations
 - Station and place locations are city centroids (see above); mile markers and off-route distances are approximate.
 - California is nearly absent from the supplied CSV (8 stations): long CA trips can be infeasible (San Francisco → Las Vegas returns a clear 422).
-- Detour-adjusted ranking is a heuristic proxy, not a road-network optimum; small top-ups occur.
+- Detour-adjusted ranking is a heuristic proxy, not a road-network optimum; Detour fuel is excluded from the `fuel.*` totals, so a pruned plan can show slightly more cash at stops while costing less overall. Pruning is a local merge pass, not a global re-optimization.
 - Border rule is polygon-based; routes grazing the border (< 2 mi or within ~1 mi of the line) are not flagged.
 - Public OSRM demo is rate-limited; use an ORS key for production.
